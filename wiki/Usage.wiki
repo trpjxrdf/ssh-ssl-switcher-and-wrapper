@@ -1,4 +1,4 @@
-#summary One-sentence summary of this page.
+#How to install and use
 
 = Installation =
 == Unstall fpc compiler ==
