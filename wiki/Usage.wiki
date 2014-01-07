@@ -1,5 +1,3 @@
-#How to install and use
-
 = Installation =
 == Unstall fpc compiler ==
 
