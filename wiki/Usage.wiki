@@ -1,5 +1,5 @@
 = Installation =
-== Unstall fpc compiler ==
+== Install FPC compiler ==
 
 _without FPC IDE_
 
