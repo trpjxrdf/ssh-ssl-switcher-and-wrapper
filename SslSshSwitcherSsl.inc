@@ -16,12 +16,12 @@
       SIGNATURE_1: packed array[0..3] of byte = (0, 34, 212, 7);
       SIGNATURE_RDP: packed array[0..2] of byte = (3, 0, 0);
 
-      SSL_FIRST_BYTE_WAIT_TIME = 000; // ms, 0 - disabled
+      SSL_FIRST_BYTE_WAIT_TIME = 0; // ms, 0 - disabled
       FIRST_BYTE_WAIT_TIME = 1000; // ms
       SIGNATURE_WAIT_TIME = 5000; // ms
       SSL_HANDSHAKE_TIME = 5000; // ms
       CONNECT_TIMEOUT = 5000; // ms
-      IDDLE_TIMEOUT = 1000 * 10; // ms
+      IDDLE_TIMEOUT = 60 * 1000 * 10; // ms
 
       BUFFER_SIZE = 4096; // bytes
 
