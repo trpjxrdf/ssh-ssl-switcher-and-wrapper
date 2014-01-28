@@ -43,7 +43,7 @@ type
   TLogLevel = (logError, logWarn, logInfo);
 
 const
- {$i SslSshSwitcherSsl2.inc}
+ {$i SslSshSwitcherSsl.inc}
 
   hostPattern = 'Host: ';
 
