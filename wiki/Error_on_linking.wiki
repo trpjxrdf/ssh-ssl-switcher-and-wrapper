@@ -1,0 +1,5 @@
+Error "cannot find -ldl"
+
+Install additional components
+
+apt-get install libc6-dev
