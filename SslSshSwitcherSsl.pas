@@ -488,7 +488,7 @@ var
   b: boolean;
   sa, sa2: sigactionrec;
 begin
-  int64(sa.sa_handler) := SIG_IGN;
+  PtrInt(sa.sa_handler) := SIG_IGN;
   sa.sa_mask[0] := 0;
   sa.sa_flags := 0;
   fpsigaction(SIGPIPE, @sa, @sa2);
