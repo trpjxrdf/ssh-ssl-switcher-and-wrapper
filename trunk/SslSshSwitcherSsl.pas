@@ -62,7 +62,7 @@ var
     ssl: PSSL; // ssl for sock[0]
     closed: array[0..1] of boolean;
     buf: array[0..1] of record
-      size: cint;
+      size: SizeInt;
       data: PBuffer;
     end;
   end;
@@ -488,7 +488,7 @@ var
   b: boolean;
   sa, sa2: sigactionrec;
 begin
-  integer(sa.sa_handler) := SIG_IGN;
+  int64(sa.sa_handler) := SIG_IGN;
   sa.sa_mask[0] := 0;
   sa.sa_flags := 0;
   fpsigaction(SIGPIPE, @sa, @sa2);
