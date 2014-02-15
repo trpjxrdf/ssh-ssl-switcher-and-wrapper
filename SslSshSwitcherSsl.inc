@@ -5,7 +5,7 @@
 
       Targets: array[TConnectionType] of record ssl: boolean; addr: in_addr; port: word; end = (
          (ssl: false; addr: (s_bytes: (127, 0, 0, 1)); port: 22), // SSH
-         (ssl: true;  addr: (s_bytes: (193, 28, 44, 148)); port: 443), // HTTP
+         (ssl: true;  addr: (s_bytes: (173, 194, 32, 149)); port: 443), // HTTP
          (ssl: false; addr: (s_bytes: (127, 0, 0, 1)); port: 3000), // CON1
          (ssl: false; addr: (s_bytes: (192, 168, 7, 134)); port: 3389) // RDP
       );
