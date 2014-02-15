@@ -3,7 +3,7 @@ program SslSshSwitcherSsl;
 {$mode objfpc}{$H+}
 
 {DEFINE DEBUG}
-{$DEFINE LOG}
+{DEFINE LOG}
 
 {
   -- ALGORITHM --
@@ -713,6 +713,7 @@ begin
 
   except
     LogException(ExceptObject);
+	raise;
   end;
 
 end.
