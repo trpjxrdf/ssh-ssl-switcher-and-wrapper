@@ -1,7 +1,7 @@
       PORT_LISTEN = 3000;
 
       //HTTP_HOST_NAME = 'www.forexpf.ru'; // to replace "Host: " in HTTP header. Or empty.
-      HTTP_HOST_NAME = 'connect.raiffeisen.ru';
+      HTTP_HOST_NAME = 'mail.google.com';
 
       Targets: array[TConnectionType] of record ssl: boolean; addr: in_addr; port: word; end = (
          (ssl: false; addr: (s_bytes: (127, 0, 0, 1)); port: 22), // SSH
