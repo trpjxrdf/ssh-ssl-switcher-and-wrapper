@@ -3,7 +3,7 @@ program SslSshSwitcherSsl;
 {$mode objfpc}{$H+}
 
 {DEFINE DEBUG}
-{DEFINE LOG}
+{$DEFINE LOG}
 
 {
   -- ALGORITHM --
@@ -50,6 +50,11 @@ const
 type
   PBuffer = ^TBuffer;
   TBuffer = array[0..4096 - 1] of byte;
+  TPendingState = record
+    state: (stNotUsed, stActive, stShutdown, stClosed);
+    wantRead: boolean;
+    wantWrite: boolean;
+  end;
 
 var
   conn: array[0..MAX_CONN - 1] of record
@@ -60,22 +65,13 @@ var
     timeoutTime: TDateTime;
     sock: array[0..1] of Tsocket;
     ssl: array[0..1] of PSSL;
-    closed: array[0..1] of boolean;
+    pending: array[0..1] of TPendingState;
     buf: array[0..1] of record
       size: SizeInt;
       data: PBuffer;
     end;
   end;
-
-var
-  server, client: Tsocket;
-  bindAddr: TSockAddr;
-  clientAddr: TSockAddr;
-  res: cint;
-  len: tsocklen;
-  fdr, fdw: TFDSet;
-  i, j: integer;
-  freeConnCount: cint;
+  freeConnCount: cint = 0;
 
 const CRLF = #13#10;
 
@@ -172,7 +168,7 @@ var
       raise Exception.Create('OpenSSL error on "' + op + '": ' + s);
   end;
 
-  function CheckSSLresult(ssl: PSSL; retcode: integer; const op: string): boolean;
+  function CheckSSLresult(ssl: PSSL; retcode: integer; const op: string; var pending: TPendingState): boolean;
   overload;
   var
     err: integer;
@@ -181,13 +177,18 @@ var
     if retcode <> 1 then
     begin
       err := OpenSSL.SslGetError(ssl, retcode);
+      Result := False;
       case err of
-        SSL_ERROR_NONE: ;
-        SSL_ERROR_WANT_READ,
-        SSL_ERROR_WANT_WRITE,
+        SSL_ERROR_NONE,
+        SSL_ERROR_SYSCALL: ;
+        SSL_ERROR_WANT_READ: pending.wantRead:= true;
+        SSL_ERROR_WANT_WRITE: pending.wantWrite:= true;
         SSL_ERROR_WANT_X509_LOOKUP,
         SSL_ERROR_WANT_CONNECT,
-        SSL_ERROR_WANT_ACCEPT: Result := False;
+        SSL_ERROR_WANT_ACCEPT: begin
+          pending.wantRead:= true;
+          pending.wantWrite:= true;
+        end
         else
         begin
           RaiseSslError(err, op);
@@ -219,15 +220,12 @@ var
       for j := 0 to 1 do
       begin
         Dispose(conn[i].buf[j].Data);
-        if conn[i].ssl[j] <> nil then
-        begin
-          SslShutdown(conn[i].ssl[j]);
+        if conn[i].ssl[j] <> nil then begin
           SslFree(conn[i].ssl[j]);
           conn[i].ssl[j] := nil;
         end;
         if conn[i].sock[j] <> 0 then
         begin
-          //if gracefully then Sockets.fpshutdown(conn[i].sock[j], 2);
           Sockets.CloseSocket(conn[i].sock[j]);
         end;
       end;
@@ -258,120 +256,176 @@ var
       Log(logError, 'Unknown error');
   end;
 
-  function Recv(i, j: cint; maxSize: cint): boolean;
+  procedure Recv0(i: cint; maxSize: cint);
   var
     n: integer;
     p: ^byte;
   begin
     with conn[i] do begin
-      if closed[j] then exit;
-      n := maxSize - buf[1-j].size;
-      if n <= 0 then exit;
-      p := @buf[1-j].Data[0];
-      Inc(p, buf[1-j].size);
-      if ssl[j] <> nil then
-      begin
-        n := SslRead(ssl[j], p, n);
-        if n > 0 then
-        begin
-          Inc(buf[1-j].size, n);
-        end
-        else
-        if n = 0 then
-        begin
-          closed[j] := True;
-        end
-        else
-        begin
-          CheckSSLresult(ssl[j], n, 'SslRead');
-        end;
-      end
-      else
-      begin
-        n := Sockets.fprecv(sock[j], p, n, 0);
-        if n > 0 then
-        begin
-          Inc(buf[1-j].size, n);
-        end
-        else
-        if n = 0 then
-        begin
-          closed[j] := True;
-        end
-        else
-        if n < 0 then
-        begin
-          if errno <> ESysEAGAIN then
-            RaiseLastOSError;
-        end;
-      end;
-      Result := buf[1-j].size = maxSize;
-    end;
-  end;
-
-  function Send(i, j: cint): boolean;
-  var
-    res: cint;
-  begin
-    with conn[i] do
-    begin
-      Result := False;
-      if closed[j] then buf[j].size := 0;
-      if buf[j].size = 0 then exit;
-      if ssl[j] <> nil then
-      begin
-        res := SslWrite(ssl[j], @buf[j].Data[0], buf[j].size);
-        if res > 0 then
-        begin
-          if res > buf[j].size then
-            raise Exception.Create('res > buf[' + IntToStr(j) + '].size !');
-          Dec(buf[j].size, res);
-          if buf[j].size > 0 then
-            Move(buf[j].Data[res], buf[j].Data[0], buf[j].size);
-          Result := True;
-        end
-        else
-        begin
-          CheckSSLresult(ssl[j], res, 'SslWrite');
-        end;
-      end
-      else
-      begin
-        res := Sockets.fpsend(sock[j], @buf[j].Data[0], buf[j].size, 0);
-        if res > 0 then
-        begin
-          if res > buf[j].size then
-            raise Exception.Create('res > buf[' + IntToStr(j) + '].size !');
-          Dec(buf[j].size, res);
-          if buf[j].size > 0 then
-            Move(buf[j].Data[res], buf[j].Data[0], buf[j].size);
-          Result := True;
-        end
-        else
-        begin
-          if errno <> ESysEAGAIN then
-            RaiseLastOSError;
+      pending[0].wantRead := false;
+      pending[0].wantWrite := false;
+      while true do begin
+        if pending[0].state <> stActive then exit;
+        n := maxSize - buf[1].size;
+        if n <= 0 then exit;
+        p := @buf[1].Data^;
+        Inc(p, buf[1].size);
+        if ssl[0] <> nil then begin
+          n := SslRead(ssl[0], p, n);
+          if n > 0 then
+            Inc(buf[1].size, n)
+          else if n = 0 then
+            pending[0].state := stClosed
+          else begin
+            CheckSSLresult(ssl[0], n, 'SslRead', pending[0]);
+            break;
+          end;
+        end else begin
+          n := Sockets.fprecv(sock[0], p, n, 0);
+          if n > 0 then
+            Inc(buf[1].size, n)
+          else if n = 0 then
+            pending[0].state := stClosed
+          else begin
+            if errno = ESysEAGAIN then begin
+              pending[0].wantRead := true;
+              break;
+            end
+            else
+              RaiseLastOSError;
+          end;
         end;
       end;
     end;
   end;
 
   procedure Tunnel(i: cint);
+
+  var hasActivity: boolean;
+
+  procedure DoSend(i, k: cint);
   var
-    j, res: cint;
-    hasActivity: boolean;
+    res: cint;
   begin
-    with conn[i] do
-    begin
-      hasActivity := False;
-      Recv(i, 0, sizeof(TBuffer));
-      if status = stFree then exit;
-      if Send(i, 1) then hasActivity := True;
-      if status = stFree then exit;
-      Recv(i, 1, sizeof(TBuffer));
-      if status = stFree then exit;
-      if Send(i, 0) then hasActivity := True;
-      if status = stFree then exit;
+    with conn[i] do begin
+      if ssl[k] <> nil then begin
+        res := SslWrite(ssl[k], buf[k].Data, buf[k].size);
+        if res > 0 then begin
+          hasActivity := true;
+          if res > buf[k].size then
+            raise Exception.Create('res > buf[' + IntToStr(k) + '].size !');
+          Dec(buf[k].size, res);
+          if buf[k].size > 0 then begin
+            Move(buf[k].Data^[res], buf[k].Data^, buf[k].size);
+            pending[k].wantWrite := true;
+          end;
+        end else begin
+          CheckSSLresult(ssl[k], res, 'SslWrite', pending[k]);
+        end;
+      end
+      else
+      begin
+        res := Sockets.fpsend(sock[k], buf[k].Data, buf[k].size, 0);
+        if res > 0 then begin
+          if res > buf[k].size then
+            raise Exception.Create('res > buf[' + IntToStr(k) + '].size !');
+          Dec(buf[k].size, res);
+          if buf[k].size > 0 then begin
+            Move(buf[k].Data^[res], buf[k].Data^, buf[k].size);
+            pending[k].wantWrite := true;
+          end;
+        end else begin
+          if errno = ESysEAGAIN then
+            pending[k].wantWrite := true
+          else
+            RaiseLastOSError;
+        end;
+      end;
+    end;
+  end;
+
+  function DoRecv(i, k: cint): boolean;
+  const maxSize = sizeof(TBuffer);
+  var
+    n: integer;
+    p: ^byte;
+  begin
+    with conn[i] do begin
+      n := maxSize - buf[1-k].size;
+      if n <= 0 then exit;
+      p := @buf[1-k].Data^;
+      Inc(p, buf[1-k].size);
+      if ssl[k] <> nil then begin
+        n := SslRead(ssl[k], p, n);
+        if n > 0 then
+          Inc(buf[1-k].size, n)
+        else
+        if n = 0 then
+          pending[k].state := stClosed
+        else begin
+          CheckSSLresult(ssl[k], n, 'SslRead', pending[k]);
+        end;
+      end else begin
+        n := Sockets.fprecv(sock[k], p, n, 0);
+        if n > 0 then
+          Inc(buf[1-k].size, n)
+        else
+        if n = 0 then
+          pending[k].state := stClosed
+        else begin
+          if errno = ESysEAGAIN then
+            pending[k].wantRead := true
+          else
+            RaiseLastOSError;
+        end;
+      end;
+    end;
+  end;
+
+  var
+    k, res: cint;
+  begin
+    hasActivity := false;
+    with conn[i] do begin
+      pending[0].wantRead := false;
+      pending[0].wantWrite := false;
+      pending[1].wantRead := false;
+      pending[1].wantWrite := false;
+      for k := 0 to 1 do begin
+        repeat
+          if buf[k].size > 0 then begin
+            if pending[k].state <> stActive then
+              buf[k].size := 0
+            else begin
+              DoSend(i, k);
+            end;
+          end;
+          if buf[k].size > 0 then break;
+          if pending[1-k].state = stActive then DoRecv(i, 1-k);
+          if pending[1-k].state = stClosed then begin
+            if pending[k].state in [stActive, stShutdown] then begin
+              pending[k].state := stShutdown;
+              if ssl[k] <> nil then begin
+                res := SslShutdown(ssl[k]);
+                if res > 0 then
+                  pending[k].state := stClosed
+                else begin
+                  CheckSSLresult(ssl[k], res, 'SslShutdown', pending[k]);
+                  pending[k].wantRead := true;
+                end;
+              end else begin
+                res := fpshutdown(sock[k], 2);
+                if res <> 0 then RaiseLastOSError;
+                pending[k].state := stClosed;
+              end;
+            end;
+            if pending[k].state = stClosed then begin
+              FreeConn(i, true);
+              exit;
+            end;
+          end;
+        until buf[k].size = 0;
+      end;
       if hasActivity then begin
         SetTimeout(timeoutTime, IDDLE_TIMEOUT);
       end;
@@ -380,6 +434,13 @@ var
 
 var
   ctx: PSSL_CTX;
+  server, client: Tsocket;
+  bindAddr: TSockAddr;
+  clientAddr: TSockAddr;
+  res: cint;
+  len: tsocklen;
+  fdr, fdw: TFDSet;
+  i, j: integer;
 
   procedure FirstDataWaitCompleted(i: integer; connType: TConnectionType);
   var
@@ -393,13 +454,17 @@ var
       addr.sin_addr := Targets[connType].addr;
       addr.sin_port := htons(Targets[connType].port);
       conn[i].sock[1] := Sockets.fpsocket(AF_INET, SOCK_STREAM, 0);
-      SetSocketOptions(conn[i].sock[1]);
-      res := Sockets.fpconnect(conn[i].sock[1], @addr, sizeof(addr));
+      SetSocketOptions(sock[1]);
+      res := Sockets.fpconnect(sock[1], @addr, sizeof(addr));
       if (res = -1) and (errno <> ESysEINPROGRESS) then RaiseLastOSError;
       if Targets[connType].ssl then begin
-        conn[i].ssl[1] := SslNew(ctx);
-        CheckSSLresult(conn[i].ssl[1], SslSetFd(conn[i].ssl[1], conn[i].sock[1]), 'SslSetFd');
-        CheckSSLresult(ssl[1], SslConnect(ssl[1]), 'SslConnect')
+        ssl[1] := SslNew(ctx);
+        CheckSSLresult(ssl[1], SslSetFd(ssl[1], sock[1]), 'SslSetFd', pending[1]);
+        CheckSSLresult(ssl[1], SslConnect(ssl[1]), 'SslConnect', pending[1]);
+      end;
+      with pending[1] do begin
+        wantWrite := true;
+        state := stActive;
       end;
       status := stConnecting;
       SetTimeout(timeoutTime, CONNECT_TIMEOUT);
@@ -407,8 +472,8 @@ var
   end;
 
 var
-  b: boolean;
   sa, sa2: sigactionrec;
+  tmpps: TPendingState;
 begin
   PtrInt(sa.sa_handler) := SIG_IGN;
   sa.sa_mask[0] := 0;
@@ -423,16 +488,16 @@ begin
 
     ctx := OpenSSL.SslCtxNew(OpenSSL.SslMethodV23);
     if ctx = nil then
-      CheckSSLresult(nil, 0, 'SslCtxNew');
+      CheckSSLresult(nil, 0, 'SslCtxNew', tmpps);
     try
 
       CheckSSLresult(nil,
         SslCtxUseCertificateChainFile(ctx, CERT_FILE_NAME),
-        'SslCtxUseCertificateChainFile'
+        'SslCtxUseCertificateChainFile', tmpps
         );
       CheckSSLresult(nil,
         SslCtxUsePrivateKeyFile(ctx, KEY_FILE_NAME, SSL_FILETYPE_PEM),
-        'SslCtxUsePrivateKeyFile'
+        'SslCtxUsePrivateKeyFile', tmpps
         );
 
       ResetWaitTime;
@@ -461,63 +526,20 @@ begin
           // prepare signal`s arrays to wait
           fpFD_ZERO(fdr);
           fpFD_ZERO(fdw);
-          if freeConnCount > 0 then
-            fpFD_SET(server, fdr);
+          if freeConnCount > 0 then fpFD_SET(server, fdr);
           for i := 0 to high(conn) do
-            with conn[i] do
-            begin
-              case status of
-                stHandshake,
-                stWaitingSslFirstByte,
-                stWaitingForFirstByte,
-                stWaitingForSignature:
-                begin
-                  if closed[0] then
-                    FreeConn(i, False)
-                  else
-                    fpFD_SET(sock[0], fdr);
-                end;
-                stConnecting:
-                begin
-                  {TODO check client connection status}
-                  if closed[0] then
-                    FreeConn(i, False)
-                  else
-                  begin
-                    fpFD_SET(sock[1], fdr);
-                    fpFD_SET(sock[1], fdw);
+            with conn[i] do begin
+              if status = stFree then continue;
+              if (pending[0].state in [stNotUsed, stClosed])
+              and(pending[1].state in [stNotUsed, stClosed]) then begin
+                FreeConn(i, False);
+              end else begin
+                for j := 0 to 1 do begin
+                  if pending[j].state in [stActive, stShutdown] then begin
+                    if pending[j].wantRead  then fpFD_SET(sock[j], fdr);
+                    if pending[j].wantWrite then fpFD_SET(sock[j], fdw);
                   end;
                 end;
-                stTunneling:
-                begin
-                  if (closed[0] and closed[1]) and
-                    ((closed[0] and (buf[1].size = 0)) or
-                    (closed[1] and (buf[0].size = 0))) then
-                  begin
-                    FreeConn(i, False);
-                  end
-                  else
-                  begin
-                    for j := 0 to 1 do
-                    begin
-                      if buf[1 - j].size < sizeof(TBuffer) then
-                      begin
-                        if not closed[j] then
-                        begin
-                          fpFD_SET(sock[j], fdr);
-                        end;
-                      end
-                      else
-                      begin
-                        if not closed[1 - j] then
-                        begin
-                          fpFD_SET(sock[1 - j], fdw);
-                        end;
-                      end;
-                    end;
-                  end;
-                end;
-                stFree: ;
               end;
             end;
 
@@ -534,8 +556,7 @@ begin
           for i := 0 to high(conn) do
             with conn[i] do
             begin
-              if status = stFree then
-                continue;
+              if status = stFree then continue;
               try
                 if status = stTunneling then
                 begin
@@ -560,12 +581,13 @@ begin
                     FirstDataWaitCompleted(i, ctSSH);
                   end
                   else
-                  if fpFD_ISSET(sock[0], fdr) <> 0 then
-                  begin
-                    conn[i].ssl[0] := SslNew(ctx);
-                    CheckSSLresult(conn[i].ssl[0], SslSetFd(conn[i].ssl[0], conn[i].sock[0]), 'SslSetFd');
-                    conn[i].status := stHandshake;
-                    SetTimeout(conn[i].timeoutTime, SSL_HANDSHAKE_TIME);
+                  if fpFD_ISSET(sock[0], fdr) <> 0 then begin
+                    pending[0].wantRead := true;
+                    pending[0].wantWrite := false;
+                    ssl[0] := SslNew(ctx);
+                    CheckSSLresult(ssl[0], SslSetFd(ssl[0], sock[0]), 'SslSetFd', pending[0]);
+                    status := stHandshake;
+                    SetTimeout(timeoutTime, SSL_HANDSHAKE_TIME);
                   end;
                 end;
                 if status = stHandshake then
@@ -578,8 +600,9 @@ begin
                   else
                   if fpFD_ISSET(sock[0], fdr) <> 0 then
                   begin
-                    if CheckSSLresult(ssl[0], SslAccept(ssl[0]), 'SslAccept') then
-                    begin
+                    pending[0].wantRead := false;
+                    pending[0].wantWrite := false;
+                    if CheckSSLresult(ssl[0], SslAccept(ssl[0]), 'SslAccept', pending[0]) then begin
                       SetTimeout(conn[i].timeoutTime, FIRST_BYTE_WAIT_TIME);
                       status := stWaitingForFirstByte;
                     end;
@@ -587,14 +610,11 @@ begin
                 end;
                 if status = stWaitingForFirstByte then
                 begin
-                  if TimeReached(timeoutTime) then
-                  begin
+                  if TimeReached(timeoutTime) then begin
                     FirstDataWaitCompleted(i, ctSSH);
-                  end
-                  else
-                  if fpFD_ISSET(sock[0], fdr) <> 0 then
-                  begin
-                    Recv(i, 0, sizeof(TBuffer) - length(HTTP_HOST_NAME));
+                  end else
+                  if fpFD_ISSET(sock[0], fdr) <> 0 then begin
+                    Recv0(i, sizeof(TBuffer) - length(HTTP_HOST_NAME));
                     if conn[i].buf[1].size > 0 then
                     begin
                       SetTimeout(conn[i].timeoutTime, SIGNATURE_WAIT_TIME);
@@ -612,21 +632,23 @@ begin
                   else
                   if fpFD_ISSET(sock[0], fdr) <> 0 then
                   begin
-                    b := Recv(i, 0, sizeof(TBuffer) - length(HTTP_HOST_NAME));
+                    Recv0(i, sizeof(TBuffer) - length(HTTP_HOST_NAME));
                     if (buf[1].size >= sizeof(SIGNATURE_RDP))
                     and(buf[1].size >= sizeof(SIGNATURE_1)) then begin
-                      if CompareByte(buf[1].Data[0], SIGNATURE_RDP[0], sizeof(SIGNATURE_RDP)) = 0 then begin
+                      if CompareByte(buf[1].Data^, SIGNATURE_RDP[0], sizeof(SIGNATURE_RDP)) = 0 then begin
                         FirstDataWaitCompleted(i, ctRDP);
                       end else
-                      if CompareByte(buf[1].Data[0], SIGNATURE_1[0], sizeof(SIGNATURE_1)) = 0 then begin
+                      if CompareByte(buf[1].Data^, SIGNATURE_1[0], sizeof(SIGNATURE_1)) = 0 then begin
                         Dec(buf[1].size, sizeof(SIGNATURE_1));
                         if buf[1].size > 0 then
-                          Move(buf[1].Data[sizeof(SIGNATURE_1)], buf[1].Data[0], buf[1].size);
+                          Move(buf[1].Data^[sizeof(SIGNATURE_1)], buf[1].Data^, buf[1].size);
                         FirstDataWaitCompleted(i, ctCON1);
                       end else begin
-                        if b or (FindBytePattern(buf[1].Data[0], buf[1].size, CRLF + CRLF) >= 0) then begin
-                          if length(HTTP_HOST_NAME) > 0 then ReplaceHost(buf[1].Data[0], buf[1].size, sizeof(TBuffer), HTTP_HOST_NAME);
+                        if (buf[1].size >= sizeof(TBuffer) - length(HTTP_HOST_NAME))
+                        or (FindBytePattern(buf[1].Data^, buf[1].size, CRLF + CRLF) >= 0) then begin
+                          if length(HTTP_HOST_NAME) > 0 then ReplaceHost(buf[1].Data^, buf[1].size, sizeof(TBuffer), HTTP_HOST_NAME);
                           FirstDataWaitCompleted(i, ctHTTP);
+                          pending[0].wantRead := true;
                         end;
                       end;
                     end;
@@ -684,6 +706,11 @@ begin
                 New(conn[i].buf[0].Data);
                 New(conn[i].buf[1].Data);
                 Dec(freeConnCount);
+                with conn[i].pending[0] do begin
+                  wantRead := true;
+                  wantWrite := false;
+                  state := stActive;
+                end;
                 SetTimeout(conn[i].timeoutTime, SSL_FIRST_BYTE_WAIT_TIME);
               end
               else
@@ -713,7 +740,6 @@ begin
 
   except
     LogException(ExceptObject);
-	raise;
   end;
 
 end.
