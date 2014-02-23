@@ -1,9 +1,7 @@
 program SslSshSwitcherSsl;
 
 {$mode objfpc}{$H+}
-
-{DEFINE DEBUG}
-{$DEFINE LOG}
+{DEFINE LOG}
 
 {
   -- ALGORITHM --
@@ -130,17 +128,17 @@ var
   CurrentTime: TDateTime;
   waitTime: cint;
 
+  {$IFDEF LOG}
   procedure Log(level: TLogLevel; const msg: string);
   begin
-  {$IFDEF LOG}
     case level of
       logError: Write('ERROR: ');
       logWarn: Write('WARN: ');
       logInfo: Write('INFO: ');
     end;
     writeln(msg);
-  {$ENDIF}
   end;
+  {$ENDIF}
 
   function TimeReached(const timeVar: TDateTime): boolean;
   var
@@ -243,10 +241,11 @@ var
       end;
       FillChar(conn[i], sizeof(conn[i]), #0);
       Inc(freeConnCount);
-      Log(logInfo, 'freeConnCount=' + IntToStr(freeConnCount));
+      {$IFDEF LOG}Log(logInfo, 'freeConnCount=' + IntToStr(freeConnCount));{$ENDIF}
     end;
   end;
 
+  {$IFDEF LOG}
   procedure LogException(eobj: TObject);
   begin
     if eobj is Exception then
@@ -256,6 +255,7 @@ var
     else
       Log(logError, 'Unknown error');
   end;
+  {$ENDIF}
 
   procedure Recv0(i: cint; maxSize: cint);
   var
@@ -571,7 +571,7 @@ begin
                     TimeReached(timeoutTime) then
                   begin
                     FreeConn(i, False);
-                    Log(logWarn, 'Iddle timeout');
+                    {$IFDEF LOG}Log(logWarn, 'Iddle timeout');{$ENDIF}
                   end;
                   continue;
                 end;
@@ -596,7 +596,7 @@ begin
                 begin
                   if TimeReached(timeoutTime) then
                   begin
-                    Log(logWarn, 'SSL handshake timeout');
+                    {$IFDEF LOG}Log(logWarn, 'SSL handshake timeout');{$ENDIF}
                     FreeConn(i, False);
                   end
                   else
@@ -628,7 +628,7 @@ begin
                 begin
                   if TimeReached(timeoutTime) then
                   begin
-                    Log(logWarn, 'Wait signature timeout');
+                    {$IFDEF LOG}Log(logWarn, 'Wait signature timeout');{$ENDIF}
                     FreeConn(i, False);
                   end
                   else
@@ -661,7 +661,7 @@ begin
                   {TODO check client connection status}
                   if TimeReached(timeoutTime) then
                   begin
-                    Log(logWarn, 'Outgoing connection timeout');
+                    {$IFDEF LOG}Log(logWarn, 'Outgoing connection timeout');{$ENDIF}
                     FreeConn(i, False);
                   end
                   else
@@ -674,13 +674,13 @@ begin
                   else
                   if fpFD_ISSET(sock[1], fdr) <> 0 then
                   begin
-                    Log(logWarn, 'Outgoing connection error');
+                    {$IFDEF LOG}Log(logWarn, 'Outgoing connection error');{$ENDIF}
                     FreeConn(i, False);
                   end;
                 end;
               except
                 FreeConn(i, False);
-                LogException(ExceptObject);
+                {$IFDEF LOG}LogException(ExceptObject);{$ENDIF}
               end;
             end;
           // process accept
@@ -708,7 +708,7 @@ begin
                 New(conn[i].buf[0].Data);
                 New(conn[i].buf[1].Data);
                 Dec(freeConnCount);
-                Log(logInfo, 'freeConnCount=' + IntToStr(freeConnCount));
+                {$IFDEF LOG}Log(logInfo, 'freeConnCount=' + IntToStr(freeConnCount));{$ENDIF}
                 with conn[i].pending[0] do begin
                   wantRead := true;
                   wantWrite := false;
@@ -718,7 +718,7 @@ begin
               end
               else
               begin
-                Log(logError, 'freeConnCount > 0 but no free conn found');
+                {$IFDEF LOG}Log(logError, 'freeConnCount > 0 but no free conn found');{$ENDIF}
                 Sockets.CloseSocket(client);
               end;
             except
@@ -726,7 +726,7 @@ begin
                 Sockets.CloseSocket(client);
               if i >= 0 then
                 FreeConn(i, False);
-              LogException(ExceptObject);
+              {$IFDEF LOG}LogException(ExceptObject);{$ENDIF}
             end;
           end;
         until False;
@@ -742,7 +742,11 @@ begin
     end;
 
   except
+    {$IFDEF LOG}
     LogException(ExceptObject);
+    {$ELSE}
+    on E: Exception do writeln(E.Message);
+    {$ENDIF}
   end;
 
 end.
