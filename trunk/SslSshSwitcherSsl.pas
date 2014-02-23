@@ -130,6 +130,18 @@ var
   CurrentTime: TDateTime;
   waitTime: cint;
 
+  procedure Log(level: TLogLevel; const msg: string);
+  begin
+  {$IFDEF LOG}
+    case level of
+      logError: Write('ERROR: ');
+      logWarn: Write('WARN: ');
+      logInfo: Write('INFO: ');
+    end;
+    writeln(msg);
+  {$ENDIF}
+  end;
+
   function TimeReached(const timeVar: TDateTime): boolean;
   var
     d: double;
@@ -168,7 +180,7 @@ var
       raise Exception.Create('OpenSSL error on "' + op + '": ' + s);
   end;
 
-  function CheckSSLresult(ssl: PSSL; retcode: integer; const op: string; var pending: TPendingState): boolean;
+  function CheckSSLresult(ssl: PSSL; retcode: integer; const op: string; var pending: TPendingState; IgnoreSysCall: boolean = false): boolean;
   overload;
   var
     err: integer;
@@ -179,8 +191,8 @@ var
       err := OpenSSL.SslGetError(ssl, retcode);
       Result := False;
       case err of
-        SSL_ERROR_NONE,
-        SSL_ERROR_SYSCALL: ;
+        SSL_ERROR_NONE: ;
+        SSL_ERROR_SYSCALL: if not IgnoreSysCall then RaiseSslError(err, op);
         SSL_ERROR_WANT_READ: pending.wantRead:= true;
         SSL_ERROR_WANT_WRITE: pending.wantWrite:= true;
         SSL_ERROR_WANT_X509_LOOKUP,
@@ -231,19 +243,8 @@ var
       end;
       FillChar(conn[i], sizeof(conn[i]), #0);
       Inc(freeConnCount);
+      Log(logInfo, 'freeConnCount=' + IntToStr(freeConnCount));
     end;
-  end;
-
-  procedure Log(level: TLogLevel; const msg: string);
-  begin
-  {$IFDEF LOG}
-    case level of
-      logError: Write('ERROR: ');
-      logWarn: Write('WARN: ');
-      logInfo: Write('INFO: ');
-    end;
-    writeln(msg);
-  {$ENDIF}
   end;
 
   procedure LogException(eobj: TObject);
@@ -313,7 +314,7 @@ var
         if res > 0 then begin
           if res > buf[k].size then
             raise Exception.Create('res > buf[' + IntToStr(k) + '].size !');
-		  hasActivity := true;	
+          hasActivity := true;
           Dec(buf[k].size, res);
           if buf[k].size > 0 then begin
             Move(buf[k].Data^[res], buf[k].Data^, buf[k].size);
@@ -329,7 +330,7 @@ var
         if res > 0 then begin
           if res > buf[k].size then
             raise Exception.Create('res > buf[' + IntToStr(k) + '].size !');
-		  hasActivity := true;
+	  hasActivity := true;
           Dec(buf[k].size, res);
           if buf[k].size > 0 then begin
             Move(buf[k].Data^[res], buf[k].Data^, buf[k].size);
@@ -411,7 +412,7 @@ var
                 if res > 0 then
                   pending[k].state := stClosed
                 else begin
-                  CheckSSLresult(ssl[k], res, 'SslShutdown', pending[k]);
+                  CheckSSLresult(ssl[k], res, 'SslShutdown', pending[k], true);
                   pending[k].wantRead := true;
                 end;
               end else begin
@@ -707,6 +708,7 @@ begin
                 New(conn[i].buf[0].Data);
                 New(conn[i].buf[1].Data);
                 Dec(freeConnCount);
+                Log(logInfo, 'freeConnCount=' + IntToStr(freeConnCount));
                 with conn[i].pending[0] do begin
                   wantRead := true;
                   wantWrite := false;
