@@ -190,7 +190,7 @@ var
       Result := False;
       case err of
         SSL_ERROR_NONE: ;
-        SSL_ERROR_SYSCALL: if not IgnoreSysCall then RaiseSslError(err, op);
+        SSL_ERROR_SYSCALL: if not IgnoreSysCall then RaiseSslError(err, op) else pending.wantRead:= true;
         SSL_ERROR_WANT_READ: pending.wantRead:= true;
         SSL_ERROR_WANT_WRITE: pending.wantWrite:= true;
         SSL_ERROR_WANT_X509_LOOKUP,
