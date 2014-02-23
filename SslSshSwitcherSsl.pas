@@ -311,9 +311,9 @@ var
       if ssl[k] <> nil then begin
         res := SslWrite(ssl[k], buf[k].Data, buf[k].size);
         if res > 0 then begin
-          hasActivity := true;
           if res > buf[k].size then
             raise Exception.Create('res > buf[' + IntToStr(k) + '].size !');
+		  hasActivity := true;	
           Dec(buf[k].size, res);
           if buf[k].size > 0 then begin
             Move(buf[k].Data^[res], buf[k].Data^, buf[k].size);
@@ -329,6 +329,7 @@ var
         if res > 0 then begin
           if res > buf[k].size then
             raise Exception.Create('res > buf[' + IntToStr(k) + '].size !');
+		  hasActivity := true;
           Dec(buf[k].size, res);
           if buf[k].size > 0 then begin
             Move(buf[k].Data^[res], buf[k].Data^, buf[k].size);
