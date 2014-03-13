@@ -193,7 +193,7 @@ var
         SSL_ERROR_SYSCALL: begin
             pending.wantRead:= true;
             if not IgnoreSysCall then begin
-              if not(errno in [ESysEINPROGRESS, ESysEAGAIN]) then RaiseLastOSError;
+              if not(errno in [0, ESysEINPROGRESS, ESysEAGAIN]) then RaiseLastOSError;
             end;
         end;
         SSL_ERROR_WANT_READ: pending.wantRead:= true;
@@ -463,7 +463,7 @@ var
       conn[i].sock[1] := Sockets.fpsocket(AF_INET, SOCK_STREAM, 0);
       SetSocketOptions(sock[1]);
       res := Sockets.fpconnect(sock[1], @addr, sizeof(addr));
-      if (res = -1) and not (errno in [ESysEINPROGRESS, ESysEAGAIN]) then RaiseLastOSError;
+      if (res = -1) and not (errno in [0, ESysEINPROGRESS, ESysEAGAIN]) then RaiseLastOSError;
       if Targets[connType].ssl then begin
         ssl[1] := SslNew(ctx);
         CheckSSLresult(ssl[1], SslSetFd(ssl[1], sock[1]), 'SslSetFd', pending[1]);
@@ -524,7 +524,7 @@ begin
         if res < 0 then
           RaiseLastOSError;
 
-        res := Sockets.fplisten(server, 5);
+        res := Sockets.fplisten(server, 50);
         if res < 0 then
           RaiseLastOSError;
 
