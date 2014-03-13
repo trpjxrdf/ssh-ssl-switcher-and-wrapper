@@ -190,7 +190,12 @@ var
       Result := False;
       case err of
         SSL_ERROR_NONE: ;
-        SSL_ERROR_SYSCALL: if not IgnoreSysCall then RaiseSslError(err, op) else pending.wantRead:= true;
+        SSL_ERROR_SYSCALL: begin
+            pending.wantRead:= true;
+            if not IgnoreSysCall then begin
+              if not(errno in [ESysEINPROGRESS, ESysEAGAIN]) then RaiseLastOSError;
+            end;
+        end;
         SSL_ERROR_WANT_READ: pending.wantRead:= true;
         SSL_ERROR_WANT_WRITE: pending.wantWrite:= true;
         SSL_ERROR_WANT_X509_LOOKUP,
@@ -458,7 +463,7 @@ var
       conn[i].sock[1] := Sockets.fpsocket(AF_INET, SOCK_STREAM, 0);
       SetSocketOptions(sock[1]);
       res := Sockets.fpconnect(sock[1], @addr, sizeof(addr));
-      if (res = -1) and (errno <> ESysEINPROGRESS) then RaiseLastOSError;
+      if (res = -1) and not (errno in [ESysEINPROGRESS, ESysEAGAIN]) then RaiseLastOSError;
       if Targets[connType].ssl then begin
         ssl[1] := SslNew(ctx);
         CheckSSLresult(ssl[1], SslSetFd(ssl[1], sock[1]), 'SslSetFd', pending[1]);
@@ -606,6 +611,8 @@ begin
                     pending[0].wantWrite := false;
                     if CheckSSLresult(ssl[0], SslAccept(ssl[0]), 'SslAccept', pending[0]) then begin
                       SetTimeout(conn[i].timeoutTime, FIRST_BYTE_WAIT_TIME);
+                      pending[0].wantRead := true;
+                      pending[0].wantWrite := false;
                       status := stWaitingForFirstByte;
                     end;
                   end;
